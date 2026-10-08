@@ -117,7 +117,7 @@ git add .
 git commit -m "feat: initial commit of Canvas AI Canary Studio for Cloudflare Pages"
 
 # 4. Add your GitHub remote repository
-git remote add origin https://github.com/<your-username>/<your-repo-name>.git
+git remote add origin https://github.com/Arsydian/Canary_Studio.git
 
 # 5. Push to GitHub
 git push -u origin main
