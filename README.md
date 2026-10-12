@@ -19,6 +19,7 @@ Rather than relying on probabilistic, inaccurate AI detectors, **Canvas AI Canar
 1. **Option 1: Canvas LMS Native HTML Injection (Off-Screen CSS Token)**
    - Injects off-screen CSS (`position: absolute; left: -9999px; width: 1px; height: 1px; overflow: hidden; opacity: 0; font-size: 0pt;`) that bypasses Canvas Rich Content Editor (RCE) sanitization.
    - Invisible to student browsers, but automatically copied when students highlight or `Ctrl+A` copy the prompt into an LLM.
+   - Marked `aria-hidden="true"` (kept by Canvas's sanitizer) so screen readers don't read the directive aloud to students using assistive technology.
    - Features persistent prompt saving and live simulated Canvas previews.
 
 2. **Option 2: Zero-Width Unicode Tag Steganography**
@@ -28,10 +29,12 @@ Rather than relying on probabilistic, inaccurate AI detectors, **Canvas AI Canar
 3. **Option 3: Academic PDF Brief Generator**
    - Renders professional academic assignment PDFs directly in browser memory using `pdf-lib` (zero server upload, 100% FERPA/student privacy compliant).
    - Injects a dual-layer canary: a transparent zero-opacity text stream and embedded document metadata (`/Subject`, `/Keywords`, `/Title`).
+   - Generates a tagged (accessible) PDF: screen readers follow the tag structure and skip the hidden layer, which is marked as an artifact, while text extraction still includes it.
 
 4. **Option 4: Canvas Discussion Board Prompt Trap**
    - Specifically engineered for informal discussion forums where formal academic citations look unnatural.
    - Instructs any AI responding to the prompt to naturally integrate the target word **`canary`** within a complete sentence.
+   - Uses the same `aria-hidden` off-screen span as Option 1, so screen readers skip the directive.
    - Enables fast grading in Canvas SpeedGrader via `Ctrl+F "canary"`.
 
 5. **Option 5: Submission Auditor & Scanner**

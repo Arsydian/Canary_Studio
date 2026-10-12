@@ -9,7 +9,18 @@
  * 5. Submission Auditor & Scanner
  */
 
-import { PDFDocument, rgb, StandardFonts } from 'pdf-lib'
+import {
+  PDFDocument,
+  PDFName,
+  PDFNumber,
+  PDFOperator,
+  PDFOperatorNames,
+  PDFPage,
+  PDFRef,
+  PDFString,
+  rgb,
+  StandardFonts,
+} from 'pdf-lib'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -38,6 +49,8 @@ export const DEFAULT_PEER_INSTRUCTIONS =
   "Peer Reply Instructions: By Sunday 11:59 PM, post substantive responses to at least " +
   "two classmates. Extend their ideas, ask thoughtful questions, or offer alternative perspectives."
 
+// Hides the directive visually. Off-screen text is still read aloud by screen readers, so the
+// span also carries aria-hidden="true" (which Canvas keeps); copy-and-paste still includes it.
 export const CANVAS_OFFSCREEN_CSS =
   "position: absolute; left: -9999px; width: 1px; height: 1px; " +
   "overflow: hidden; opacity: 0; font-size: 0pt; color: transparent; user-select: text;"
@@ -97,7 +110,7 @@ export function generateCanvasHtml(
     (p, idx, arr) => {
       const escaped = escapeHtml(p).replace(/\n/g, "<br/>")
       if (idx === arr.length - 1) {
-        return `  <p style="font-size: 11pt; line-height: 1.6; color: #2D3B45;">${escaped}<span style="${CANVAS_OFFSCREEN_CSS}" data-audit-token="canvas-rce-v1">${safeDirective}</span></p>`
+        return `  <p style="font-size: 11pt; line-height: 1.6; color: #2D3B45;">${escaped}<span style="${CANVAS_OFFSCREEN_CSS}" aria-hidden="true" data-audit-token="canvas-rce-v1">${safeDirective}</span></p>`
       }
       return `  <p style="font-size: 11pt; line-height: 1.6; color: #2D3B45;">${escaped}</p>`
     }
@@ -155,6 +168,68 @@ export function decodeUnicodeTags(encodedStr: string): string {
 // Option 3: Academic PDF Brief Generator (via pdf-lib in Browser)
 // ---------------------------------------------------------------------------
 
+/**
+ * Minimal tagged-PDF builder for a single page. Screen readers follow the structure tree of a
+ * tagged PDF, so they read the tagged (visible) text in order and skip content marked as an
+ * Artifact. Plain text extraction (what AI tools use on uploaded PDFs) ignores tags and still
+ * picks up the artifact text.
+ */
+function createPdfTagger(pdfDoc: PDFDocument, page: PDFPage) {
+  const context = pdfDoc.context
+  const documentRef = context.nextRef()
+  const children: PDFRef[] = []
+  const elementByMcid: PDFRef[] = []
+
+  return {
+    /** Draws one structure element (e.g. 'H1', 'P'); each draw call becomes one marked-content run. */
+    element(role: string, draws: Array<() => void>) {
+      const elementRef = context.nextRef()
+      const mcids: number[] = []
+      for (const draw of draws) {
+        const mcid = elementByMcid.length
+        elementByMcid.push(elementRef)
+        mcids.push(mcid)
+        page.pushOperators(
+          PDFOperator.of(PDFOperatorNames.BeginMarkedContentSequence, [
+            PDFName.of(role),
+            `<</MCID ${mcid}>>`, // inline property list; written verbatim into the content stream
+          ])
+        )
+        draw()
+        page.pushOperators(PDFOperator.of(PDFOperatorNames.EndMarkedContent))
+      }
+      context.assign(
+        elementRef,
+        context.obj({ Type: 'StructElem', S: role, P: documentRef, Pg: page.ref, K: mcids })
+      )
+      children.push(elementRef)
+    },
+
+    /** Draws content that assistive technology should skip (decoration or hidden layers). */
+    artifact(draw: () => void) {
+      page.pushOperators(PDFOperator.of(PDFOperatorNames.BeginMarkedContent, [PDFName.of('Artifact')]))
+      draw()
+      page.pushOperators(PDFOperator.of(PDFOperatorNames.EndMarkedContent))
+    },
+
+    /** Writes the structure tree and marks the document as tagged. */
+    finish(lang: string) {
+      const rootRef = context.nextRef()
+      const parentTree = context.register(context.obj({ Nums: [0, context.obj(elementByMcid)] }))
+      context.assign(documentRef, context.obj({ Type: 'StructElem', S: 'Document', P: rootRef, K: children }))
+      context.assign(
+        rootRef,
+        context.obj({ Type: 'StructTreeRoot', K: documentRef, ParentTree: parentTree, ParentTreeNextKey: 1 })
+      )
+      page.node.set(PDFName.of('StructParents'), PDFNumber.of(0))
+      page.node.set(PDFName.of('Tabs'), PDFName.of('S'))
+      pdfDoc.catalog.set(PDFName.of('StructTreeRoot'), rootRef)
+      pdfDoc.catalog.set(PDFName.of('MarkInfo'), context.obj({ Marked: true }))
+      pdfDoc.catalog.set(PDFName.of('Lang'), PDFString.of(lang))
+    },
+  }
+}
+
 export interface PdfCanaryParams {
   visiblePrompt: string
   directive?: string
@@ -178,7 +253,7 @@ export async function generatePdfCanaryBlob(params: PdfCanaryParams): Promise<Bl
   const page = pdfDoc.addPage([612, 792]) // Standard US Letter
 
   // Set document metadata (encountered by LLMs when uploading PDF)
-  pdfDoc.setTitle(assignmentTitle)
+  pdfDoc.setTitle(assignmentTitle, { showInWindowTitleBar: true })
   pdfDoc.setAuthor(courseName)
   pdfDoc.setSubject(directive)
   pdfDoc.setKeywords(["academic audit", "rubric criteria", "cain held 2026", "verification directive"])
@@ -190,56 +265,78 @@ export async function generatePdfCanaryBlob(params: PdfCanaryParams): Promise<Bl
   const fontTimes = await pdfDoc.embedFont(StandardFonts.TimesRoman)
   const fontTimesItalic = await pdfDoc.embedFont(StandardFonts.TimesRomanItalic)
 
+  // Tagged PDF: screen readers read only the tagged elements below, in order
+  const tagger = createPdfTagger(pdfDoc, page)
+
   let y = 738
 
   // Top course header
-  page.drawText(courseName.toUpperCase(), {
-    x: 54,
-    y,
-    size: 11,
-    font: fontBold,
-    color: rgb(0.1, 0.21, 0.36),
-  })
+  const headerY = y
+  tagger.element("P", [
+    () =>
+      page.drawText(courseName.toUpperCase(), {
+        x: 54,
+        y: headerY,
+        size: 11,
+        font: fontBold,
+        color: rgb(0.1, 0.21, 0.36),
+      }),
+  ])
   y -= 24
 
   // Assignment Title
-  page.drawText(assignmentTitle, {
-    x: 54,
-    y,
-    size: 18,
-    font: fontBold,
-    color: rgb(0.06, 0.09, 0.16),
-  })
+  const titleY = y
+  tagger.element("H1", [
+    () =>
+      page.drawText(assignmentTitle, {
+        x: 54,
+        y: titleY,
+        size: 18,
+        font: fontBold,
+        color: rgb(0.06, 0.09, 0.16),
+      }),
+  ])
   y -= 20
 
   // Metadata row (Due date, Points, Submission)
   const metaText = `Due Date: ${dueDate}    |    Points: ${points}    |    Submission: Canvas Online`
-  page.drawText(metaText, {
-    x: 54,
-    y,
-    size: 9.5,
-    font: fontRegular,
-    color: rgb(0.28, 0.33, 0.41),
-  })
+  const metaY = y
+  tagger.element("P", [
+    () =>
+      page.drawText(metaText, {
+        x: 54,
+        y: metaY,
+        size: 9.5,
+        font: fontRegular,
+        color: rgb(0.28, 0.33, 0.41),
+      }),
+  ])
   y -= 12
 
   // Accent divider line
-  page.drawLine({
-    start: { x: 54, y },
-    end: { x: 558, y },
-    thickness: 1.5,
-    color: rgb(0.01, 0.52, 0.78),
-  })
+  const accentY = y
+  tagger.artifact(() =>
+    page.drawLine({
+      start: { x: 54, y: accentY },
+      end: { x: 558, y: accentY },
+      thickness: 1.5,
+      color: rgb(0.01, 0.52, 0.78),
+    })
+  )
   y -= 26
 
   // Section Heading
-  page.drawText("Assignment Instructions & Prompt", {
-    x: 54,
-    y,
-    size: 12.5,
-    font: fontBold,
-    color: rgb(0.12, 0.16, 0.23),
-  })
+  const sectionY = y
+  tagger.element("H2", [
+    () =>
+      page.drawText("Assignment Instructions & Prompt", {
+        x: 54,
+        y: sectionY,
+        size: 12.5,
+        font: fontBold,
+        color: rgb(0.12, 0.16, 0.23),
+      }),
+  ])
   y -= 18
 
   // Split prompt into lines that fit page width (max ~504 pt width, approx 80 chars per line)
@@ -266,54 +363,76 @@ export async function generatePdfCanaryBlob(params: PdfCanaryParams): Promise<Bl
     return lines
   }
 
-  const promptLines = wrapText(visiblePrompt)
-  for (const line of promptLines) {
+  // Prompt paragraphs (blank lines separate them); each paragraph is one tagged P element
+  let paragraphDraws: Array<() => void> = []
+  const flushParagraph = () => {
+    if (paragraphDraws.length) tagger.element("P", paragraphDraws)
+    paragraphDraws = []
+  }
+  for (const line of wrapText(visiblePrompt)) {
     if (y < 90) break // Stay within bottom margin
     if (!line) {
+      flushParagraph()
       y -= 10
       continue
     }
-    page.drawText(line, {
-      x: 54,
-      y,
-      size: 10.5,
-      font: fontTimes,
-      color: rgb(0.12, 0.16, 0.23),
-    })
+    const lineY = y
+    paragraphDraws.push(() =>
+      page.drawText(line, {
+        x: 54,
+        y: lineY,
+        size: 10.5,
+        font: fontTimes,
+        color: rgb(0.12, 0.16, 0.23),
+      })
+    )
     y -= 15
   }
+  flushParagraph()
 
   y -= 14
-  page.drawLine({
-    start: { x: 54, y },
-    end: { x: 558, y },
-    thickness: 0.5,
-    color: rgb(0.8, 0.83, 0.88),
-  })
+  const ruleY = y
+  tagger.artifact(() =>
+    page.drawLine({
+      start: { x: 54, y: ruleY },
+      end: { x: 558, y: ruleY },
+      thickness: 0.5,
+      color: rgb(0.8, 0.83, 0.88),
+    })
+  )
   y -= 16
 
   // Footer notes
-  page.drawText(
-    "Submission Guidelines: All work must reflect original critical analysis. Follow standard course academic integrity policies.",
-    {
-      x: 54,
-      y,
-      size: 8.5,
-      font: fontTimesItalic,
-      color: rgb(0.4, 0.45, 0.52),
-    }
-  )
+  const footerY = y
+  tagger.element("P", [
+    () =>
+      page.drawText(
+        "Submission Guidelines: All work must reflect original critical analysis. Follow standard course academic integrity policies.",
+        {
+          x: 54,
+          y: footerY,
+          size: 8.5,
+          font: fontTimesItalic,
+          color: rgb(0.4, 0.45, 0.52),
+        }
+      ),
+  ])
 
   // INVISIBLE CANARY LAYER: Rendered transparently with microscopic text
-  // Text extraction tools (pypdf, OCR, ChatGPT PDF reader) extract this stream layer
-  page.drawText(directive, {
-    x: 54,
-    y: 54,
-    size: 0.5,
-    font: fontRegular,
-    opacity: 0,
-    color: rgb(1, 1, 1),
-  })
+  // Text extraction tools (pypdf, OCR, ChatGPT PDF reader) extract this stream layer.
+  // Marked as an Artifact so screen readers, which follow the tag tree, never read it aloud.
+  tagger.artifact(() =>
+    page.drawText(directive, {
+      x: 54,
+      y: 54,
+      size: 0.5,
+      font: fontRegular,
+      opacity: 0,
+      color: rgb(1, 1, 1),
+    })
+  )
+
+  tagger.finish("en-US")
 
   const pdfBytes = await pdfDoc.save()
   return new Blob([pdfBytes as unknown as BlobPart], { type: "application/pdf" })
@@ -354,7 +473,7 @@ export function generateDiscussionBoardHtml(
       `  </div>`
   }
 
-  const canarySpan = `  <span style="${CANVAS_OFFSCREEN_CSS}" data-audit-token="discussion-canary-v1">${safeDirective}</span>\n`
+  const canarySpan = `  <span style="${CANVAS_OFFSCREEN_CSS}" aria-hidden="true" data-audit-token="discussion-canary-v1">${safeDirective}</span>\n`
 
   return (
     `<div class="${containerClass}" style="font-family: 'Lato', 'Helvetica Neue', Arial, sans-serif; padding: 12px 4px;">\n` +
