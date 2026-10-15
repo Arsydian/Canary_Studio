@@ -14,11 +14,11 @@ Rather than relying on probabilistic, inaccurate AI detectors, **Canvas AI Canar
 
 ---
 
-## 🚀 The 5 Verification Vectors
+## 🚀 The 4 Verification Vectors
 
 1. **Option 1: Canvas LMS Native HTML Injection (Off-Screen CSS Token)**
    - Injects off-screen CSS (`position: absolute; left: -9999px; width: 1px; height: 1px; overflow: hidden; opacity: 0; font-size: 0pt;`) that bypasses Canvas Rich Content Editor (RCE) sanitization.
-   - Invisible to student browsers, but automatically copied when students highlight or `Ctrl+A` copy the prompt into an LLM.
+   - Invisible to student browsers. Placed right after the prompt's first sentence, so it is copied along with almost any highlighted portion of the prompt, not only a full `Ctrl+A`.
    - Marked `aria-hidden="true"` (kept by Canvas's sanitizer) so screen readers don't read the directive aloud to students using assistive technology.
    - Features persistent prompt saving and live simulated Canvas previews.
 
@@ -33,17 +33,11 @@ Rather than relying on probabilistic, inaccurate AI detectors, **Canvas AI Canar
 
 4. **Option 4: Canvas Discussion Board Prompt Trap**
    - Specifically engineered for informal discussion forums where formal academic citations look unnatural.
-   - Instructs any AI responding to the prompt to naturally integrate the target word **`canary`** within a complete sentence.
+   - Asks any AI responding to the prompt to use an uncommon phrase (default **`quiet lighthouse`**) in a complete sentence.
    - Uses the same `aria-hidden` off-screen span as Option 1, so screen readers skip the directive.
-   - Enables fast grading in Canvas SpeedGrader via `Ctrl+F "canary"`.
+   - Enables fast grading in Canvas SpeedGrader via `Ctrl+F "quiet lighthouse"`.
 
-5. **Option 5: Submission Auditor & Scanner**
-   - Automated grading inspector to audit student text submissions.
-   - Scans for:
-     - The benchmark citation: *Cain, S. M., & Held, M. L. (2026)* and DOI (`10.1093/swr/svag004`).
-     - The Discussion Board canary token: the word *"canary"*.
-     - Decodes hidden Unicode Tag steganography.
-   - Generates confidence scores, highlighted excerpts, and evidence summaries.
+When grading, search submissions for `Cain`, the DOI fragment `svag004`, or your phrase. Any trap can be customized with your own citation or phrase.
 
 ---
 
@@ -139,7 +133,7 @@ git push -u origin main
 ├── public/
 │   └── _headers                 # Edge security headers & caching configuration
 ├── src/
-│   ├── canaryEngine.ts          # Core integrity algorithms (HTML, Unicode, PDF, Discussion, Auditor)
+│   ├── canaryEngine.ts          # Core integrity algorithms (HTML, Unicode, PDF, Discussion)
 │   ├── App.tsx                  # Interactive React application UI & dual previews
 │   ├── main.tsx                 # React entry point
 │   └── index.css                # Tailwind CSS imports & global styles
